@@ -1,0 +1,15 @@
+venv/
+.env
+.git/
+.gitignore
+.dockerignore
+__pycache__/
+*.pyc
+
+# Runtime state comes from the mounted data volume, not the image.
+data/
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.db-journal
+.agent_builder_recovery/
