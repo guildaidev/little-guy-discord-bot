@@ -1,0 +1,641 @@
+import os
+import sqlite3
+import re
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import discord
+from discord.ext import commands, tasks
+
+
+# Store the database inside a data folder.
+DATA_FOLDER = Path("data")
+DATABASE_PATH = DATA_FOLDER / "bump_reminders.db"
+
+
+# Words the bot looks for in successful bump responses.
+# These can be adjusted later if either bot uses different wording.
+DISBOARD_SUCCESS_PHRASES = (
+    "bump done",
+    "bumped",
+)
+
+CARLBOT_SUCCESS_PHRASES = (
+    "bumped",
+    "bumped this server",
+    "You've successfully bumped this server",
+)
+
+
+class BumpReminders(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+        self.disboard_bot_id = self.get_required_id(
+            "DISBOARD_BOT_ID"
+        )
+
+        self.carlbot_bot_id = self.get_required_id(
+            "CARLBOT_BOT_ID"
+        )
+
+        self.reminder_role_id = self.get_required_id(
+            "BUMP_REMINDER_ROLE_ID"
+        )
+
+        DATA_FOLDER.mkdir(exist_ok=True)
+
+        self.database = sqlite3.connect(DATABASE_PATH)
+
+        self.create_table()
+
+        self.reminder_checker.start()
+
+    # =========================================================
+    # Setup helpers
+    # =========================================================
+
+    @staticmethod
+    def get_required_id(variable_name: str) -> int:
+        value = os.getenv(variable_name)
+
+        if not value:
+            raise RuntimeError(
+                f"{variable_name} is missing from the environment."
+            )
+
+        return int(value)
+
+    def create_table(self):
+        self.database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bump_reminders (
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                service TEXT NOT NULL,
+                reminder_time TEXT NOT NULL,
+
+                PRIMARY KEY (
+                    guild_id,
+                    service
+                )
+            )
+            """
+        )
+
+        self.database.commit()
+
+    # =========================================================
+    # Message-reading helpers
+    # =========================================================
+
+    @staticmethod
+    def get_message_text(message: discord.Message) -> str:
+        """
+        Combines normal message text and embed text so successful
+        bump responses can be detected in either format.
+        """
+
+        # Normal message content
+        parts = [message.content]
+
+        # Embed content
+        for embed in message.embeds:
+            if embed.title:
+                parts.append(embed.title)
+
+            if embed.description:
+                parts.append(embed.description)
+
+            for field in embed.fields:
+                parts.append(field.name)
+                parts.append(field.value)
+
+            if embed.footer and embed.footer.text:
+                parts.append(embed.footer.text)
+
+        # Components V2 text
+        def read_component(component):
+            if isinstance(component, discord.TextDisplay):
+                parts.append(component.content)
+            children = getattr(component, "children", None)
+
+            if children:
+                for child in children:
+                    read_component(child)
+
+        for component in message.components:
+            read_component(component)
+            
+        return " ".join(
+            part for part in parts if part
+        ).lower()
+
+    @staticmethod
+    def contains_success_phrase(
+        text: str,
+        phrases: tuple[str, ...]
+    ) -> bool:
+        return any(
+            phrase in text
+            for phrase in phrases
+        )
+
+    
+    # # Detects cooldown durations in Carl-bot messages and converts them to timedelta objects (plain text)
+    # @staticmethod
+    # def parse_cooldown(text: str) -> timedelta | None:
+    #     """
+    #     Finds durations such as:
+    #     5 hours
+    #     2 hours and 30 minutes
+    #     45 minutes
+    #     1 hour 10 minutes and 20 seconds
+    #     """
+    #     matches = re.findall(
+    #         r"(\d+)\s*"
+    #         r"(days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)",
+    #         text.lower()
+    #     )
+
+    #     if not matches:
+    #         return None
+
+    #     days = 0
+    #     hours = 0
+    #     minutes = 0
+    #     seconds = 0
+
+    #     for amount_text, unit in matches:
+    #         amount = int(amount_text)
+
+    #         if unit.startswith("day"):
+    #             days += amount
+    #         elif unit.startswith("hour") or unit.startswith("hr"):
+    #             hours += amount
+    #         elif unit.startswith("minute") or unit.startswith("min"):
+    #             minutes += amount
+    #         elif unit.startswith("second") or unit.startswith("sec"):
+    #             seconds += amount
+
+    #         cooldown = timedelta(
+    #             days=days,
+    #             hours=hours,
+    #             minutes=minutes,
+    #             seconds=seconds
+    #         )
+
+    #         if cooldown.total_seconds() <= 0:
+    #             return None
+
+    #         return cooldown
+
+
+    # Checks for Discord timestamps like <t:16669420:R> and converts them to datetime objects.
+    @staticmethod
+    def parse_discord_timestamp(text: str) -> datetime | None:
+        """
+        Extracts a Discord timestamp such as:
+        <t:16669420:R>
+        """
+
+        match = re.search(r"<t:(\d+)(?::[a-zA-Z])?>", text)
+
+        if match is None:
+            return None
+
+        unix_timestamp = int(match.group(1))
+
+        return datetime.fromtimestamp(
+            unix_timestamp,
+            tz=timezone.utc
+        )
+
+    # @staticmethod
+    # def format_cooldown(cooldown: timedelta) -> str:
+    #     total_seconds = int(cooldown.total_seconds())
+    #     days, remainder = divmod(total_seconds, 86400)
+    #     hours, remainder = divmod(remainder, 3600)
+    #     minutes, seconds = divmod(remainder, 60)
+
+    #     parts = []
+
+    #     if days > 0:
+    #         parts.append(f"{days} day{'s' if days != 1 else ''}")
+
+    #     if hours > 0:
+    #         parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+
+    #     if minutes > 0:
+    #         parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
+
+    #     if seconds > 0:
+    #         parts.append(f"{seconds} second{'s' if seconds != 1 else ''}")
+
+    #     return " and ".join(parts)
+
+            
+
+    # =========================================================
+    # Reminder database methods
+    # =========================================================
+
+    def save_reminder(
+        self,
+        guild_id: int,
+        channel_id: int,
+        service: str,
+        reminder_time: datetime
+    ):
+        """
+        Adds or replaces the reminder for a service in a guild.
+        """
+
+        self.database.execute(
+            """
+            INSERT INTO bump_reminders (
+                guild_id,
+                channel_id,
+                service,
+                reminder_time
+            )
+            VALUES (?, ?, ?, ?)
+
+            ON CONFLICT (
+                guild_id,
+                service
+            )
+            DO UPDATE SET
+                channel_id = excluded.channel_id,
+                reminder_time = excluded.reminder_time
+            """,
+            (
+                guild_id,
+                channel_id,
+                service,
+                reminder_time.isoformat()
+            )
+        )
+
+        self.database.commit()
+
+
+    def get_reminder(
+        self,
+        guild_id: int,
+        service: str
+    ) -> datetime | None:
+        """
+        Returns the currently scheduled reminder time.
+        """
+
+        cursor = self.database.execute(
+            """
+            SELECT reminder_time
+            FROM bump_reminders
+            WHERE guild_id = ?
+            AND service = ?
+            """,
+            (
+                guild_id,
+                service
+            )
+        )
+
+        result = cursor.fetchone()
+
+        if result is None:
+            return None
+
+        return datetime.fromisoformat(result[0])
+
+
+    def get_due_reminders(
+        self,
+        current_time: datetime
+    ) -> list[tuple[int, int, str]]:
+        cursor = self.database.execute(
+            """
+            SELECT
+                guild_id,
+                channel_id,
+                service
+
+            FROM bump_reminders
+
+            WHERE reminder_time <= ?
+            """,
+            (
+                current_time.isoformat(),
+            )
+        )
+
+        return cursor.fetchall()
+
+
+    def delete_reminder(
+        self,
+        guild_id: int,
+        service: str
+    ):
+        self.database.execute(
+            """
+            DELETE FROM bump_reminders
+
+            WHERE guild_id = ?
+            AND service = ?
+            """,
+            (
+                guild_id,
+                service
+            )
+        )
+
+        self.database.commit()
+
+    # =========================================================
+    # Detect successful bumps
+    # =========================================================
+
+    @commands.Cog.listener()
+    async def on_message(
+        self,
+        message: discord.Message
+    ):
+        await self.check_bump_message(message)
+
+    @commands.Cog.listener()
+    async def on_message_edit(
+        self,
+        before: discord.Message,
+        after: discord.Message
+    ):
+#        print("MESSAGE EDIT DETECTED", flush=True)
+
+        await self.check_bump_message(after)
+
+    async def check_bump_message(
+            self,
+            message: discord.Message
+    ):
+        
+        if message.guild is None:
+            return
+
+        message_text = self.get_message_text(message)
+
+        # -----------------------------
+        # Disboard: two-hour reminder
+        # -----------------------------
+
+        if message.author.id == self.disboard_bot_id:
+            if not self.contains_success_phrase(
+                message_text,
+                DISBOARD_SUCCESS_PHRASES
+            ):
+                return
+
+            reminder_time = (
+                datetime.now(timezone.utc)
+                + timedelta(hours=2)
+            )
+
+            self.save_reminder(
+                guild_id=message.guild.id,
+                channel_id=message.channel.id,
+                service="disboard",
+                reminder_time=reminder_time
+            )
+
+            confirmation_embed = discord.Embed(
+                title="⏰ Disboard Reminder Set",
+                description=(
+                    "I'll remind you the server can be bumped again in **2 hours**."
+                ),
+                color=discord.Color.blurple(),
+            )
+
+            await message.channel.send(
+                content=f"<@&{self.reminder_role_id}>",
+                embed=confirmation_embed,
+                allowed_mentions=discord.AllowedMentions(
+                    roles=True,
+                    users=False,
+                    everyone=False
+                )
+            )
+
+            print(
+                "Disboard reminder scheduled for "
+                f"{reminder_time.isoformat()}"
+            )
+
+            return
+
+        # -----------------------------
+        # Carl-bot: six-hour reminder
+        # -----------------------------
+
+        if message.author.id == self.carlbot_bot_id:
+            reminder_time = self.parse_discord_timestamp(message_text)
+
+            if reminder_time is not None:
+                if reminder_time <= datetime.now(timezone.utc):
+                    return
+            
+                
+
+                self.save_reminder(
+                    guild_id=message.guild.id,
+                    channel_id=message.channel.id,
+                    service="carlbot",
+                    reminder_time=reminder_time
+                )
+
+                confirmation_embed = discord.Embed(
+                    title="⏰ Carl-bot Reminder Set",
+                    description=(
+                        f"Carl-bot is currently on cooldown.\n\n"
+                        f"I'll remind you to bump again"
+                        f"**{discord.utils.format_dt(reminder_time, style='R')}**."
+                    ),
+                    color=discord.Color.gold(),
+                )
+
+                await message.channel.send(
+                    content=f"<@&{self.reminder_role_id}>",
+                    embed=confirmation_embed,
+                    allowed_mentions=discord.AllowedMentions(
+                        roles=True,
+                        users=False,
+                        everyone=False
+                    )
+                )
+
+                print(
+                    "Carl-bot reminder scheduled for "
+                    f"{reminder_time.isoformat()}"
+                )
+
+            if not self.contains_success_phrase(
+                message_text,
+                CARLBOT_SUCCESS_PHRASES
+            ):
+                # Debugging output to indicate that the message did not match any of the expected phrases
+                print(
+                    "Carl-bot text did not match.",
+                    f"text={message_text!r}",
+                    f"phrases={CARLBOT_SUCCESS_PHRASES!r}"
+                )
+                return
+
+            print("Carl-bot success phrase matched.")
+
+            reminder_time = (
+                datetime.now(timezone.utc)
+                + timedelta(hours=6)
+            )
+
+            self.save_reminder(
+                guild_id=message.guild.id,
+                channel_id=message.channel.id,
+                service="carlbot",
+                reminder_time=reminder_time
+            )
+
+            confirmation_embed = discord.Embed(
+                title="⏰ Carl-bot Reminder Set",
+                description=(
+                    "I'll remind you the server can be bumped again in **6 hours**."
+                ),
+                color=discord.Color.blurple(),
+            )
+
+            await message.channel.send(
+                content=f"<@&{self.reminder_role_id}>",
+                embed=confirmation_embed,
+                allowed_mentions=discord.AllowedMentions(
+                    roles=True,
+                    users=False,
+                    everyone=False
+                )
+            )
+
+            print(
+                "Carl-bot reminder scheduled for "
+                f"{reminder_time.isoformat()}"
+            )
+
+    # =========================================================
+    # Reminder embeds
+    # =========================================================
+
+    def create_disboard_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="🚀 Disboard Bump Is Ready!",
+            description=(
+                "It has been **2 hours** since the last "
+                "successful Disboard bump.\n\n"
+                "The server can be bumped again with `/bump`."
+            ),
+            color=discord.Color.blurple(),
+            timestamp=datetime.now(timezone.utc)
+        )
+
+        embed.set_footer(
+            text="Time for another server bump!"
+        )
+
+        return embed
+
+    def create_carlbot_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="⭐ Carl-bot Bump Is Ready!",
+            description=(
+                "It has been **6 hours** since the last "
+                "successful Carl-bot bump.\n\n"
+                "The server can now be bumped again with `/bump`."
+            ),
+            color=discord.Color.gold(),
+            timestamp=datetime.now(timezone.utc)
+        )
+
+        embed.set_footer(
+            text="Time for another server bump!"
+        )
+
+        return embed
+
+    # =========================================================
+    # Check and send reminders
+    # =========================================================
+
+    @tasks.loop(minutes=1)
+    async def reminder_checker(self):
+        current_time = datetime.now(timezone.utc)
+
+        due_reminders = self.get_due_reminders(
+            current_time
+        )
+
+        for guild_id, channel_id, service in due_reminders:
+            channel = self.bot.get_channel(channel_id)
+
+            if not isinstance(
+                channel,
+                discord.TextChannel | discord.Thread
+            ):
+                print(
+                    f"Could not find bump channel {channel_id}."
+                )
+
+                continue
+
+            if service == "disboard":
+                embed = self.create_disboard_embed()
+
+            elif service == "carlbot":
+                embed = self.create_carlbot_embed()
+
+            else:
+                self.delete_reminder(
+                    guild_id,
+                    service
+                )
+
+                continue
+
+            try:
+                await channel.send(
+                    content=f"<@&{self.reminder_role_id}>",
+                    embed=embed
+                )
+
+            except discord.HTTPException as error:
+                print(
+                    f"Could not send {service} reminder: "
+                    f"{error}"
+                )
+
+                continue
+
+            self.delete_reminder(
+                guild_id,
+                service
+            )
+
+    @reminder_checker.before_loop
+    async def before_reminder_checker(self):
+        await self.bot.wait_until_ready()
+
+    # =========================================================
+    # Cleanup
+    # =========================================================
+
+    def cog_unload(self):
+        self.reminder_checker.cancel()
+        self.database.close()
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(BumpReminders(bot))

@@ -1,0 +1,39 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+venv/
+.venv/
+
+# Test and tooling caches
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime state: SQLite databases and encrypted agent-builder recovery records
+data/
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+.agent_builder_recovery/
+
+# Logs
+*.log
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
