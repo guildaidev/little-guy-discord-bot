@@ -3,8 +3,8 @@ venv/
 .git/
 .gitignore
 .dockerignore
-__pycache__/
-*.pyc
+**/__pycache__/
+**/*.pyc
 
 # Runtime state comes from the mounted data volume, not the image.
 data/
