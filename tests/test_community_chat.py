@@ -1,11 +1,13 @@
 import random
 import sqlite3
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 
 from cogs.community_chat_utils import (
     greeter_member_id,
+    is_allowed_time,
     is_blocked_search_topic,
+    parse_discussion_window,
     prompt_sent_on,
     random_allowed_time,
     record_prompt_send,
@@ -80,12 +82,26 @@ class CommunityChatTests(unittest.TestCase):
         self.assertFalse(is_blocked_search_topic("Explain agent state machines"))
         self.assertFalse(is_blocked_search_topic("Find the latest Python release"))
 
-    def test_random_prompt_time_stays_outside_quiet_hours(self):
+    def test_random_prompt_time_stays_inside_window(self):
         rng = random.Random(42)
         for _ in range(500):
-            generated = random_allowed_time(rng)
-            self.assertGreaterEqual(generated.hour, 4)
-            self.assertLess(generated.hour, 23)
+            generated = random_allowed_time(9, 18, rng)
+            self.assertGreaterEqual(generated.hour, 9)
+            self.assertLess(generated.hour, 18)
+            self.assertTrue(is_allowed_time(generated, 9, 18))
+
+    def test_allowed_time_excludes_window_end_and_late_night(self):
+        self.assertTrue(is_allowed_time(time(9, 0), 9, 18))
+        self.assertTrue(is_allowed_time(time(17, 59), 9, 18))
+        self.assertFalse(is_allowed_time(time(18, 0), 9, 18))
+        self.assertFalse(is_allowed_time(time(1, 58), 9, 18))
+
+    def test_discussion_window_parsing(self):
+        self.assertEqual(parse_discussion_window("9", "18"), (9, 18))
+        self.assertEqual(parse_discussion_window("0", "24"), (0, 24))
+        for start, end in [("18", "9"), ("9", "9"), ("-1", "18"), ("9", "25"), ("nine", "18")]:
+            with self.assertRaises(RuntimeError):
+                parse_discussion_window(start, end)
 
     def test_sentence_count(self):
         self.assertEqual(sentence_count("One. Two? Three!"), 3)

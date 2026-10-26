@@ -24,7 +24,9 @@ from agents.community_chat_agent import (
 )
 from cogs.community_chat_utils import (
     greeter_member_id,
+    is_allowed_time,
     is_blocked_search_topic,
+    parse_discussion_window,
     prompt_sent_on,
     random_allowed_time,
     record_prompt_send,
@@ -57,7 +59,11 @@ class CommunityChat(commands.Cog):
             "COMMUNITY_WEB_SEARCH_MODEL",
             "gpt-4.1-mini",
         )
-        self.timezone = ZoneInfo("America/New_York")
+        self.timezone = ZoneInfo(os.getenv("DISCUSSION_TIMEZONE", "America/Los_Angeles"))
+        self.discussion_start_hour, self.discussion_end_hour = parse_discussion_window(
+            os.getenv("DISCUSSION_START_HOUR", "9"),
+            os.getenv("DISCUSSION_END_HOUR", "18"),
+        )
         self.generation_lock = asyncio.Lock()
         self.discussion_lock = asyncio.Lock()
         self.conversation_windows: dict[tuple[int, int], ConversationWindow] = {}
@@ -342,10 +348,13 @@ class CommunityChat(commands.Cog):
             (guild_id,),
         ).fetchone()
         if row:
-            return datetime.fromisoformat(row[0]).astimezone(self.timezone)
-        scheduled = datetime.combine(now.date(), random_allowed_time(), self.timezone)
+            saved = datetime.fromisoformat(row[0]).astimezone(self.timezone)
+            # A time saved under an older window or timezone is replaced.
+            if is_allowed_time(saved.time(), self.discussion_start_hour, self.discussion_end_hour):
+                return saved
+        scheduled = datetime.combine(now.date(), self._random_prompt_time(), self.timezone)
         if scheduled <= now:
-            scheduled = datetime.combine(now.date() + timedelta(days=1), random_allowed_time(), self.timezone)
+            scheduled = datetime.combine(now.date() + timedelta(days=1), self._random_prompt_time(), self.timezone)
         self.database.execute(
             "INSERT OR REPLACE INTO discussion_schedule (guild_id, scheduled_at, sent_at) VALUES (?, ?, NULL)",
             (guild_id, scheduled.isoformat()),
@@ -353,8 +362,11 @@ class CommunityChat(commands.Cog):
         self.database.commit()
         return scheduled
 
+    def _random_prompt_time(self):
+        return random_allowed_time(self.discussion_start_hour, self.discussion_end_hour)
+
     def _schedule_next(self, guild_id: int, current_day: date):
-        scheduled = datetime.combine(current_day + timedelta(days=1), random_allowed_time(), self.timezone)
+        scheduled = datetime.combine(current_day + timedelta(days=1), self._random_prompt_time(), self.timezone)
         self.database.execute(
             "INSERT OR REPLACE INTO discussion_schedule (guild_id, scheduled_at, sent_at) VALUES (?, ?, ?)",
             (guild_id, scheduled.isoformat(), datetime.now(self.timezone).isoformat()),

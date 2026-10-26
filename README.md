@@ -175,13 +175,29 @@ after the greeter trigger so duplicate greeter messages do not produce duplicate
 Little Guy welcomes. `GREETER_BOT_ID` is optional but recommended; when set,
 only that bot can trigger welcomes.
 
-Daily prompts are scheduled at varying times from 4:00 AM through 10:59 PM in
-`America/New_York`, ping only the configured Verified role, contain a community
-question, and are limited to five sentences. The schedule survives restarts in
-`data/community_chat.db`; set `COMMUNITY_CHAT_DB` to override that location.
-Staff members or members with Manage Messages can use `/discussion-prompt` to
-post that day's prompt immediately. Manual and scheduled sends share a durable
-per-server, per-Eastern-date record, so only one prompt is posted each day.
+Daily prompts are scheduled at a random time inside a configurable window, ping
+only the configured Verified role, contain a community question, and are
+limited to five sentences. By default the window is 9:00 AM through 5:59 PM in
+`America/Los_Angeles`:
+
+```text
+DISCUSSION_TIMEZONE=America/Los_Angeles
+DISCUSSION_START_HOUR=9
+DISCUSSION_END_HOUR=18
+```
+
+Hours are whole hours from 0 to 24. The window starts at `DISCUSSION_START_HOUR`
+and ends before `DISCUSSION_END_HOUR`, which must be later than the start
+hour. Windows that cross midnight are not supported. The bot does not start if
+these settings are invalid. If a saved prompt time falls outside the current
+window, such as after the window or timezone changes, the bot picks a new time
+inside the window.
+
+The schedule survives restarts in `data/community_chat.db`; set
+`COMMUNITY_CHAT_DB` to override that location. Staff members or members with
+Manage Messages can use `/discussion-prompt` to post that day's prompt
+immediately. Manual and scheduled sends share a durable per-server, per-day
+record in `DISCUSSION_TIMEZONE`, so only one prompt is posted each day.
 
 The community agent uses the existing `OPENAI_API_KEY`; a separate API key is
 not required. It has no CrewAI tools, delegation, or code-execution capability.

@@ -81,11 +81,29 @@ def sentence_count(text: str) -> int:
     return len(chunks)
 
 
-def random_allowed_time(rng: random.Random | None = None) -> time:
-    # 04:00 through 22:59 America/New_York; 23:00 through 03:59 is excluded.
+def parse_discussion_window(start_hour: str, end_hour: str) -> tuple[int, int]:
+    # The window runs from start_hour:00 up to, but not including, end_hour:00.
+    try:
+        start, end = int(start_hour), int(end_hour)
+    except ValueError as error:
+        raise RuntimeError("DISCUSSION_START_HOUR and DISCUSSION_END_HOUR must be whole hours.") from error
+    if not 0 <= start < end <= 24:
+        raise RuntimeError("Discussion prompt hours must satisfy 0 <= DISCUSSION_START_HOUR < DISCUSSION_END_HOUR <= 24.")
+    return start, end
+
+
+def random_allowed_time(
+    start_hour: int,
+    end_hour: int,
+    rng: random.Random | None = None,
+) -> time:
     source = rng or random.SystemRandom()
-    minute = source.randrange(4 * 60, 23 * 60)
+    minute = source.randrange(start_hour * 60, end_hour * 60)
     return time(hour=minute // 60, minute=minute % 60)
+
+
+def is_allowed_time(value: time, start_hour: int, end_hour: int) -> bool:
+    return start_hour <= value.hour < end_hour
 
 
 def prompt_sent_on(
